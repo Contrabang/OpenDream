@@ -9,8 +9,10 @@ internal class DMMacro {
     private readonly List<Token>? _tokens;
     private readonly string? _overflowParameter;
     private readonly int _overflowParameterIndex;
+    private bool hasBeenRead = false;
+    public readonly Location ourLocation;
 
-    public DMMacro(List<string>? parameters, List<Token>? tokens) {
+    public DMMacro(List<string>? parameters, List<Token>? tokens, Location? newLoc) {
         _parameters = parameters;
         _tokens = tokens;
 
@@ -39,10 +41,20 @@ internal class DMMacro {
                 }
             }
         }
+
+        ourLocation = newLoc ?? Location.Unknown;
     }
 
     public bool HasParameters() {
         return _parameters != null;
+    }
+
+    public void SetMacroUsed() {
+        hasBeenRead = true;
+    }
+
+    public bool IsMacroUsed() {
+        return hasBeenRead;
     }
 
     /// <summary>
@@ -139,7 +151,7 @@ internal class DMMacro {
 }
 
 // __LINE__
-internal sealed class DMMacroLine() : DMMacro(null, null) {
+internal sealed class DMMacroLine() : DMMacro(null, null, null) {
     public override List<Token> Expand(Token replacing, List<List<Token>>? parameters) {
         var line = replacing.Location.Line;
         if (line == null)
@@ -152,7 +164,7 @@ internal sealed class DMMacroLine() : DMMacro(null, null) {
 }
 
 // __FILE__
-internal sealed class DMMacroFile() : DMMacro(null, null) {
+internal sealed class DMMacroFile() : DMMacro(null, null, null) {
     public override List<Token> Expand(Token replacing, List<List<Token>>? parameters) {
         string path = replacing.Location.SourceFile.Replace(@"\", @"\\"); //Escape any backwards slashes
 
@@ -163,7 +175,7 @@ internal sealed class DMMacroFile() : DMMacro(null, null) {
 }
 
 // DM_VERSION
-internal sealed class DMMacroVersion() : DMMacro(null, null) {
+internal sealed class DMMacroVersion() : DMMacro(null, null, null) {
     public override List<Token> Expand(Token replacing, List<List<Token>>? parameters) {
         return [
             new Token(TokenType.DM_Preproc_Number, DMCompiler.Settings.DMVersion, replacing.Location, null)
@@ -172,7 +184,7 @@ internal sealed class DMMacroVersion() : DMMacro(null, null) {
 }
 
 // DM_BUILD
-internal sealed class DMMacroBuild() : DMMacro(null, null) {
+internal sealed class DMMacroBuild() : DMMacro(null, null, null) {
     public override List<Token> Expand(Token replacing, List<List<Token>>? parameters) {
         return [
             new Token(TokenType.DM_Preproc_Number, DMCompiler.Settings.DMBuild, replacing.Location, null)

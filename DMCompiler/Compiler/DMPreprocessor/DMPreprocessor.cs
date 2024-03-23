@@ -170,6 +170,12 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         }
         if(_lastIfEvaluations.Any())
             DMCompiler.Emit(WarningCode.BadDirective, _lastSeenIf, $"Missing {_lastIfEvaluations.Count} #endif directive{(_lastIfEvaluations.Count != 1 ? 's' : "")}");
+        // Iterate through the defines, finding any unused ones
+        foreach (var define in _defines) {
+            if (!define.Value.IsMacroUsed() && define.Value.ourLocation.Line != null && define.Value.ourLocation.SourceFile != "Defines.dm") {
+                DMCompiler.Emit(WarningCode.UnusedMacro, define.Value.ourLocation, $"Unused macro \"{define.Key}\".");
+            }
+        }
         DMCompiler.CheckAllPragmasWereSet();
     }
 
@@ -185,7 +191,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
             list.Add(token);
         }
 
-        _defines.Add(key, new DMMacro(null, list));
+        _defines.Add(key, new DMMacro(null, list, null));
     }
 
     // NB: Pushes files to a stack, so call in reverse order if you are
@@ -396,7 +402,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
             macroTokens.RemoveAt(macroTokens.Count - 1);
         }
 
-        _defines[defineIdentifier.Text] = new DMMacro(parameters, macroTokens);
+        _defines[defineIdentifier.Text] = new DMMacro(parameters, macroTokens, defineIdentifier.Location);
         PushToken(macroToken);
     }
 
@@ -411,6 +417,14 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         } else if (!_defines.ContainsKey(defineIdentifier.Text)) {
             DMCompiler.Emit(WarningCode.UndefineMissingDirective, defineIdentifier.Location, $"No macro named \"{defineIdentifier.PrintableText}\"");
             return;
+        }
+
+        if (!_defines.TryGetValue(defineIdentifier.Text, out DMMacro? macro)) {
+            return;
+        }
+
+        if (!macro.IsMacroUsed()) {
+            DMCompiler.Emit(WarningCode.UnusedMacro, macro.ourLocation, $"Unused macro \"{defineIdentifier.Text}\".");
         }
 
         _defines.Remove(defineIdentifier.Text);
@@ -461,6 +475,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         if (!_defines.TryGetValue(token.Text, out DMMacro? macro)) {
             return false;
         }
+        macro.SetMacroUsed();
 
         List<List<Token>>? parameters = null;
         if (macro.HasParameters() && !TryGetMacroParameters(out parameters)) {
@@ -525,8 +540,12 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
             HandleDegenerateIf();
             return;
         }
-        bool result = _defines.ContainsKey(define.Text);
-        if (!result) {
+        bool result = false;
+        if (_defines.TryGetValue(define.Text, out DMMacro? macro)) {
+            macro.SetMacroUsed();
+            result = true;
+        }
+        else {
             SkipIfBody();
         }
         _lastIfEvaluations.Push(result);
@@ -544,9 +563,11 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
             return;
         }
 
-        bool result = _defines.ContainsKey(define.Text);
-        if (result) {
+        bool result = false;
+        if (_defines.TryGetValue(define.Text, out DMMacro? macro)) {
+            macro.SetMacroUsed();
             SkipIfBody();
+            result = true;
         }
         _lastIfEvaluations.Push(!result);
     }
@@ -718,6 +739,11 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
                         DMCompiler.Emit(WarningCode.BadDirective, token.Location, $"Unexpected {token.PrintableText} directive");
                     _unprocessedTokens.Push(token); // Push it back onto the stack so we can interpret this later
                     return true;
+                case TokenType.DM_Preproc_Identifier:
+                    if (_defines.TryGetValue(token.Text, out DMMacro? macro)) {
+                        macro.SetMacroUsed();
+                    }
+                    continue;
                 default:
                     continue; // Don't need to do the ifStack check since it has not changed as a result of this token
             }

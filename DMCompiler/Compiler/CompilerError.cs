@@ -58,6 +58,7 @@ public enum WarningCode {
     // 3000 - 3999 are reserved for stylistic configuration.
     EmptyBlock = 3100,
     EmptyProc = 3101,
+    UnusedMacro = 3102,
     UnsafeClientAccess = 3200,
     SuspiciousSwitchCase = 3201, // "else if" cases are actually valid DM, they just spontaneously end the switch context and begin an if-else ladder within the else case of the switch
     AssignmentInConditional = 3202,
