@@ -1,5 +1,3 @@
-using System;
-using System.Collections.Generic;
 using System.Text;
 
 namespace DMCompiler.Compiler.DMPreprocessor;
@@ -81,7 +79,7 @@ internal class DMMacro {
         foreach (Token token in _tokens) {
             string parameterName =
                 token.Type is TokenType.DM_Preproc_TokenConcat or TokenType.DM_Preproc_ParameterStringify
-                    ? (string) token.Value!
+                    ? token.ValueAsString()
                     : token.Text;
             int parameterIndex = _parameters!.IndexOf(parameterName);
 

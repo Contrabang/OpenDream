@@ -1,4 +1,3 @@
-using System;
 using DMCompiler.DM;
 
 namespace DMCompiler.Compiler.DM.AST;
@@ -66,13 +65,13 @@ public sealed class DMASTDefinitionParameter(
     Location location,
     DMASTPath astPath,
     DMASTExpression? value,
-    DMValueType? type,
-    DMASTExpression possibleValues) : DMASTNode(location) {
+    DMComplexValueType? type,
+    DMASTExpression? possibleValues) : DMASTNode(location) {
     public DreamPath? ObjectType => _paramDecl.IsList ? DreamPath.List : _paramDecl.TypePath;
     public string Name => _paramDecl.VarName;
     public DMASTExpression? Value = value;
-    public readonly DMValueType? Type = type;
-    public DMASTExpression PossibleValues = possibleValues;
+    public readonly DMComplexValueType? Type = type;
+    public DMASTExpression? PossibleValues = possibleValues;
 
     private readonly ProcParameterDeclInfo _paramDecl = new(astPath.Path);
 }

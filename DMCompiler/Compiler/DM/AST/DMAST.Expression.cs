@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using System.Linq;
 using DMCompiler.DM;
 
@@ -17,6 +16,12 @@ public abstract class DMASTExpression(Location location) : DMASTNode(location) {
         return this;
     }
 }
+
+/// <summary>
+/// Used when there was an error parsing an expression
+/// </summary>
+/// <remarks>Emit an error code before creating!</remarks>
+public sealed class DMASTInvalidExpression(Location location) : DMASTExpression(location);
 
 public sealed class DMASTVoid(Location location) : DMASTExpression(location);
 
@@ -97,6 +102,10 @@ public sealed class DMASTGradient(Location location, DMASTCallParameter[] parame
     public readonly DMASTCallParameter[] Parameters = parameters;
 }
 
+public sealed class DMASTRgb(Location location, DMASTCallParameter[] parameters) : DMASTExpression(location) {
+    public readonly DMASTCallParameter[] Parameters = parameters;
+}
+
 public sealed class DMASTPick(Location location, DMASTPick.PickValue[] values) : DMASTExpression(location) {
     public struct PickValue(DMASTExpression? weight, DMASTExpression value) {
         public readonly DMASTExpression? Weight = weight;
@@ -135,9 +144,9 @@ public sealed class DMASTNewExpr(Location location, DMASTExpression expression, 
     public readonly DMASTCallParameter[]? Parameters = parameters;
 }
 
-public sealed class DMASTNewInferred(Location location, DMASTCallParameter[] parameters)
+public sealed class DMASTNewInferred(Location location, DMASTCallParameter[]? parameters)
     : DMASTExpression(location) {
-    public readonly DMASTCallParameter[] Parameters = parameters;
+    public readonly DMASTCallParameter[]? Parameters = parameters;
 }
 
 public sealed class DMASTTernary(Location location, DMASTExpression a, DMASTExpression b, DMASTExpression c)

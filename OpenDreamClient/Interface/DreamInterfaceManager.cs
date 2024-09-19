@@ -70,6 +70,8 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
         }
     }
 
+    public bool ShowPopupMenus { get; private set; } = true;
+
     private readonly Dictionary<string, BrowsePopup> _popupWindows = new();
     private ViewRange _view = new(5);
 
@@ -134,19 +136,7 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
     }
 
     private void RxOutput(MsgOutput pOutput) {
-        InterfaceControl? interfaceElement;
-        string? data = null;
-
-        if (pOutput.Control != null) {
-            string[] split = pOutput.Control.Split(":");
-
-            interfaceElement = (InterfaceControl?)FindElementWithId(split[0]);
-            if (split.Length > 1) data = split[1];
-        } else {
-            interfaceElement = DefaultOutput;
-        }
-
-        interfaceElement?.Output(pOutput.Value, data);
+        Output(pOutput.Control, pOutput.Value);
     }
 
     private void RxAlert(MsgAlert message) {
@@ -222,7 +212,7 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
             }
 
             var cacheFile = _dreamResource.CreateCacheFile(htmlFileName + ".html", pBrowse.HtmlSource);
-            outputBrowser.SetFileSource(cacheFile, true);
+            outputBrowser.SetFileSource(cacheFile);
 
             popup?.Open();
         }
@@ -241,7 +231,7 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
         MsgPromptResponse response = new() {
             PromptId = message.PromptId,
             Type = DreamValueType.Text,
-            Value = element?.Type ?? string.Empty
+            Value = element?.Type.Value ?? string.Empty
         };
 
         _netManager.ClientSendMessage(response);
@@ -253,7 +243,7 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
             MsgPromptResponse response = new() {
                 PromptId = message.PromptId,
                 Type = DreamValueType.Text,
-                Value = WinGet(message.ControlId, message.QueryValue)
+                Value = WinGet(message.ControlId, message.QueryValue, forceSnowflake:true)
             };
 
             _netManager.ClientSendMessage(response);
@@ -293,10 +283,13 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
 
         LoadInterfaceFromSource(interfaceText);
         _netManager.ClientSendMessage(new MsgAckLoadInterface());
+        if (_entitySystemManager.TryGetEntitySystem(out ClientVerbSystem? verbSystem))
+            DefaultInfo?.RefreshVerbs(verbSystem);
     }
 
     private void RxUpdateClientInfo(MsgUpdateClientInfo msg) {
         View = msg.View;
+        ShowPopupMenus = msg.ShowPopupMenus;
     }
 
     private void ShowPrompt(PromptWindow prompt) {
@@ -331,23 +324,35 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
 
             if (window != null) {
                 foreach (InterfaceControl element in window.ChildControls) {
-                    if (element.Id == elementId) return element;
+                    if (element.Id.Value == elementId) return element;
                 }
             }
         } else {
             string elementId = split[0];
 
+            // ":[element]" returns the default element of that type
+            switch (elementId) {
+                case ":map":
+                    return DefaultMap;
+                case ":info":
+                    return DefaultInfo;
+                case ":window":
+                    return DefaultWindow;
+                case ":output":
+                    return DefaultOutput;
+            }
+
             foreach (ControlWindow window in Windows.Values) {
-                if (window.Id == elementId)
+                if (window.Id.Value == elementId)
                     return window;
 
                 foreach (InterfaceControl element in window.ChildControls) {
-                    if (element.Id == elementId) return element;
+                    if (element.Id.Value == elementId) return element;
                 }
             }
 
             foreach (InterfaceMenu menu in Menus.Values) {
-                if (menu.Id == elementId)
+                if (menu.Id.Value == elementId)
                     return menu;
 
                 if (menu.MenuElements.TryGetValue(elementId, out var menuElement))
@@ -355,7 +360,7 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
             }
 
             foreach (var macroSet in MacroSets.Values) {
-                if (macroSet.Id == elementId)
+                if (macroSet.Id.Value == elementId)
                     return macroSet;
 
                 if (macroSet.Macros.TryGetValue(elementId, out var macroElement))
@@ -404,20 +409,20 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
 
     public void RunCommand(string fullCommand) {
         switch (fullCommand) {
-            case string x when x.StartsWith(".quit"):
+            case not null when fullCommand.StartsWith(".quit"):
                 IoCManager.Resolve<IClientNetManager>().ClientDisconnect(".quit used");
                 break;
 
-            case string x when x.StartsWith(".screenshot"):
+            case not null when fullCommand.StartsWith(".screenshot"):
                 string[] split = fullCommand.Split(" ");
                 SaveScreenshot(split.Length == 1 || split[1] != "auto");
                 break;
 
-            case string x when x.StartsWith(".configure"):
+            case not null when fullCommand.StartsWith(".configure"):
                 _sawmill.Warning(".configure command is not implemented");
                 break;
 
-            case string x when x.StartsWith(".winset"):
+            case not null when fullCommand.StartsWith(".winset"):
                 // Everything after .winset, excluding the space and quotes
                 string winsetParams = fullCommand.Substring(7); //clip .winset
                 winsetParams = winsetParams.Trim(); //clip space
@@ -426,11 +431,20 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
                 WinSet(null, winsetParams);
                 break;
 
+            case not null when fullCommand.StartsWith(".output"): {
+                string[] args = fullCommand.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (args.Length != 3) {
+                    _sawmill.Error($".output command was executed with {args.Length - 1} args instead of 2");
+                    break;
+                }
+
+                Output(args[1], args[2]);
+                break;
+            }
+
             default: {
-                // TODO: Arguments are a little more complicated than "split by spaces"
-                // e.g. strings can be passed
-                string[] args = fullCommand.Split(' ', StringSplitOptions.TrimEntries);
-                string command = args[0].ToLowerInvariant(); // Case-insensitive
+                string[] argsRaw = fullCommand.Split(' ', 2, StringSplitOptions.TrimEntries);
+                string command = argsRaw[0].ToLowerInvariant(); // Case-insensitive
 
                 if (!_entitySystemManager.TryGetEntitySystem(out ClientVerbSystem? verbSystem))
                     return;
@@ -438,12 +452,39 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
                 if (ret is not var (verbId, verbSrc, verbInfo))
                     return;
 
-                if (args.Length == 1) { // No args given; Let the verb system handle the possible prompting
+                if (argsRaw.Length == 1) { // No args given; Let the verb system handle the possible prompting
                     verbSystem.ExecuteVerb(verbSrc, verbId);
                 } else { // Attempt to parse the given arguments
-                    if (args.Length != verbInfo.Arguments.Length + 1) {
+                    List<string> args = new List<string>();
+                    StringBuilder currentArg = new();
+                    bool stringCapture = false;
+                    for (int i = 0; i < argsRaw[1].Length; i++) {
+                        if (argsRaw[1][i] == '"') {
+                            currentArg.Append('"');
+                            if (stringCapture) {
+                                args.Add(HandleEmbeddedWinget(null, currentArg.ToString()));
+                                currentArg.Clear();
+                            }
+
+                            stringCapture = !stringCapture;
+                            continue;
+                        }
+
+                        if (argsRaw[1][i] == ' ' && !stringCapture) {
+                            args.Add(HandleEmbeddedWinget(null, currentArg.ToString()));
+                            currentArg.Clear();
+                            continue;
+                        }
+
+                        currentArg.Append(argsRaw[1][i]);
+                    }
+
+                    if(currentArg.ToString() is { } arg && !string.IsNullOrEmpty(arg))
+                        args.Add(HandleEmbeddedWinget(null, arg));
+
+                    if (args.Count != verbInfo.Arguments.Length) {
                         _sawmill.Error(
-                            $"Attempted to call a verb with {verbInfo.Arguments.Length} argument(s) with only {args.Length - 1}");
+                            $"Attempted to call a verb with {verbInfo.Arguments.Length} argument(s) with only {args.Count}");
                         return;
                     }
 
@@ -451,12 +492,12 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
                     for (int i = 0; i < verbInfo.Arguments.Length; i++) {
                         DreamValueType argumentType = verbInfo.Arguments[i].Types;
 
-                        if (argumentType == DreamValueType.Text) {
-                            arguments[i] = args[i + 1];
+                        if (argumentType is DreamValueType.Text or DreamValueType.Message or DreamValueType.CommandText) {
+                            arguments[i] = args[i];
                         } else if (argumentType == DreamValueType.Num) {
-                            if (!float.TryParse(args[i + 1], out var numArg)) {
+                            if (!float.TryParse(args[i], out var numArg)) {
                                 _sawmill.Error(
-                                    $"Invalid number argument \"{args[i + 1]}\"; ignoring command ({fullCommand})");
+                                    $"Invalid number argument \"{args[i]}\"; ignoring command ({fullCommand})");
                                 return;
                             }
 
@@ -483,9 +524,38 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
         _netManager.ClientSendMessage(new MsgCommandRepeatStop() { Command = command });
     }
 
+    public string HandleEmbeddedWinget(string? controlId, string value) {
+        string result = value;
+        int startPos = result.IndexOf("[[", StringComparison.Ordinal);
+        while(startPos > -1){
+            int endPos = result.IndexOf("]]", startPos, StringComparison.Ordinal);
+            if(endPos == -1)
+                break;
+            string inner = result.Substring(startPos+2, endPos-startPos-2);
+            string[] elementSplit = inner.Split('.');
+            string innerControlId = controlId ?? "";
+            if(elementSplit.Length > 1){
+                innerControlId = (string.IsNullOrEmpty(innerControlId) ? "" : innerControlId+".")+string.Join(".", elementSplit[..^1]);
+                inner = elementSplit[^1];
+            }
+
+            string innerResult = WinGet(innerControlId, inner);
+            result = result.Substring(0, startPos) + innerResult + result.Substring(endPos+2);
+            startPos = result.IndexOf("[[", StringComparison.Ordinal);
+        }
+
+        return result;
+    }
+
     public void WinSet(string? controlId, string winsetParams) {
-        DMFLexer lexer = new DMFLexer(winsetParams);
-        DMFParser parser = new DMFParser(lexer, _serializationManager);
+        DMFParser parser;
+        try{
+            var lexer = new DMFLexer(winsetParams);
+            parser = new DMFParser(lexer, _serializationManager);
+        } catch (Exception e) {
+            _sawmill.Error($"Error parsing winset: {e}");
+            return;
+        }
 
         bool CheckParserErrors() {
             if (parser.Errors.Count <= 0)
@@ -505,59 +575,144 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
                 return;
 
             // id=abc overrides the elements of other winsets without an element
-            string? elementOverride = winSets.FirstOrNull(winSet => winSet.Element == null && winSet.Attribute == "id")?.Value;
+            string? elementOverride = winSets.FirstOrDefault(winSet => winSet.Element == null && winSet.Attribute == "id")?.Value;
 
             foreach (DMFWinSet winSet in winSets) {
                 string? elementId = winSet.Element ?? elementOverride;
 
                 if (elementId == null) {
                     if (winSet.Attribute == "command") {
-                        RunCommand(winSet.Value);
+                        RunCommand(HandleEmbeddedWinget(controlId, winSet.Value));
                     } else {
                         _sawmill.Error($"Invalid global winset \"{winsetParams}\"");
                     }
                 } else {
-                    InterfaceElement? element = FindElementWithId(elementId);
-                    MappingDataNode node = new() {
-                        {winSet.Attribute, winSet.Value}
-                    };
-
-                    if (element != null) {
-                        element.PopulateElementDescriptor(node, _serializationManager);
+                    if(winSet.TrueStatements is not null) {
+                        InterfaceElement? conditionalElement = FindElementWithId(elementId);
+                        if(conditionalElement is null)
+                            _sawmill.Error($"Invalid element on ternary condition \"{elementId}\"");
+                        else
+                            if(conditionalElement.TryGetProperty(winSet.Attribute, out var conditionalCheckValue) && conditionalCheckValue.Equals(winSet.Value)) {
+                                foreach(DMFWinSet statement in winSet.TrueStatements) {
+                                    string? statementElementId = statement.Element ?? elementId;
+                                    InterfaceElement? statementElement = FindElementWithId(statementElementId);
+                                    if(statementElement is not null) {
+                                        statementElement.SetProperty(statement.Attribute, HandleEmbeddedWinget(statementElementId, statement.Value), manualWinset: true);
+                                    } else {
+                                        _sawmill.Error($"Invalid element on ternary \"{statementElementId}\"");
+                                    }
+                                }
+                            } else if (winSet.FalseStatements is not null){
+                                foreach(DMFWinSet statement in winSet.FalseStatements) {
+                                    string? statementElementId = statement.Element ?? elementId;
+                                    InterfaceElement? statementElement = FindElementWithId(statementElementId);
+                                    if(statementElement is not null) {
+                                        statementElement.SetProperty(statement.Attribute, HandleEmbeddedWinget(statementElementId, statement.Value), manualWinset: true);
+                                    } else {
+                                        _sawmill.Error($"Invalid element on ternary \"{statementElementId}\"");
+                                    }
+                                }
+                            }
                     } else {
-                        _sawmill.Error($"Invalid element \"{elementId}\"");
+                        InterfaceElement? element = FindElementWithId(elementId);
+
+                        if (element != null) {
+                            element.SetProperty(winSet.Attribute, HandleEmbeddedWinget(elementId, winSet.Value), manualWinset: true);
+                        } else {
+                            _sawmill.Error($"Invalid element \"{elementId}\"");
+                        }
                     }
                 }
             }
         } else {
             InterfaceElement? element = FindElementWithId(controlId);
-            MappingDataNode node = parser.Attributes();
+            var attributes = parser.AttributesValues();
 
             if (CheckParserErrors())
                 return;
 
-            if (element == null && node.TryGet("parent", out ValueDataNode? parentNode)) {
-                var parent = FindElementWithId(parentNode.Value);
+            if (element == null && attributes.TryGetValue("parent", out var parentId)) {
+                var parent = FindElementWithId(parentId);
                 if (parent == null) {
-                    _sawmill.Error($"Attempted to create an element with nonexistent parent \"{parentNode.Value}\" ({winsetParams})");
+                    _sawmill.Error($"Attempted to create an element with nonexistent parent \"{parentId}\" ({winsetParams})");
                     return;
                 }
 
-                node.Add("id", controlId);
-                var childDescriptor = parent.ElementDescriptor.CreateChildDescriptor(_serializationManager, node);
+                attributes["id"] = controlId;
+                var childDescriptor = parent.ElementDescriptor.CreateChildDescriptor(_serializationManager, attributes);
                 if (childDescriptor == null)
                     return;
 
                 parent.AddChild(childDescriptor);
             } else if (element != null) {
-                element.PopulateElementDescriptor(node, _serializationManager);
+                foreach (var attribute in attributes) {
+                    element.SetProperty(attribute.Key, attribute.Value, manualWinset: true);
+                }
             } else {
                 _sawmill.Error($"Invalid element \"{controlId}\"");
             }
         }
     }
 
-    public string WinGet(string controlId, string queryValue) {
+    public string WinGet(string controlId, string queryValue, bool forceJson = false, bool forceSnowflake = false) {
+        bool ParseAndTryGet(InterfaceElement element, string query, out string result) {
+            //parse "as blah" from query if it's there
+            string[] querySplit = query.Split(" as ");
+            IDMFProperty propResult;
+            if(querySplit.Length != 2) //must be "thing as blah" or "thing". Anything else is invalid.
+                if(element.TryGetProperty(query, out propResult!)){
+                    result = forceJson ? propResult.AsJson() : forceSnowflake ? propResult.AsSnowflake() : propResult.AsRaw();
+                    return true;
+                } else {
+                    result = "";
+                    return false;
+                }
+            else{
+                if(!element.TryGetProperty(querySplit[0], out propResult!)) {
+                    result = "";
+                    return false;
+                }
+
+                if (forceJson) {
+                    result = propResult.AsJson();
+                    return true;
+                } else if (forceSnowflake) {
+                    result = propResult.AsSnowflake();
+                    return true;
+                }
+
+                switch(querySplit[1]){
+                    case "arg":
+                        result = propResult.AsArg();
+                        break;
+                    case "escaped":
+                        result = propResult.AsEscaped();
+                        break;
+                    case "string":
+                        result = propResult.AsString();
+                        break;
+                    case "params":
+                        result = propResult.AsParams();
+                        break;
+                    case "json":
+                        result = propResult.AsJson();
+                        break;
+                    case "json-dm":
+                        result = propResult.AsJsonDM();
+                        break;
+                    case "raw":
+                        result = propResult.AsRaw();
+                        break;
+                    default:
+                        _sawmill.Error($"Invalid winget query function \"{querySplit[1]}\" in \"{query}\"");
+                        result = "";
+                        return false;
+                }
+
+                return true;
+            }
+        }
+
         string GetProperty(string elementId) {
             var element = FindElementWithId(elementId);
             if (element == null) {
@@ -569,12 +724,13 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
             if(multiQuery.Length > 1) {
                 var result = "";
                 foreach(var query in multiQuery) {
-                    if (!element.TryGetProperty(query, out var queryResult))
+                    if (!ParseAndTryGet(element, query, out var queryResult))
                         _sawmill.Error($"Could not winget property {query} on {element.Id}");
                     result += query+"="+queryResult + ";";
                 }
+
                 return result.TrimEnd(';');
-            } else if (element.TryGetProperty(queryValue, out var value))
+            } else if (ParseAndTryGet(element, queryValue, out var value))
                 return value;
 
             _sawmill.Error($"Could not winget property {queryValue} on {element.Id}");
@@ -591,14 +747,16 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
                     return "true";
                 case "windows":
                     return string.Join(';',
-                        Windows.Where(pair => !((WindowDescriptor)pair.Value.ElementDescriptor).IsPane).Select(pair => pair.Key));
+                        Windows.Where(pair => !((WindowDescriptor)pair.Value.ElementDescriptor).IsPane.Value).Select(pair => pair.Key));
                 case "panes":
                     return string.Join(';',
-                        Windows.Where(pair => ((WindowDescriptor)pair.Value.ElementDescriptor).IsPane).Select(pair => pair.Key));
+                        Windows.Where(pair => ((WindowDescriptor)pair.Value.ElementDescriptor).IsPane.Value).Select(pair => pair.Key));
                 case "menus":
                     return string.Join(';', Menus.Keys);
                 case "macros":
                     return string.Join(';', MacroSets.Keys);
+                case "url":
+                    return _netManager.ServerChannel?.RemoteEndPoint.ToString() ?? string.Empty; // TODO: Port should be 0 "if connected to a local .dmb file"
                 default:
                     _sawmill.Error($"Special winget \"{queryValue}\" is not implemented");
                     return string.Empty;
@@ -623,6 +781,22 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
         }
 
         return result.ToString();
+    }
+
+    public void Output(string? control, string value) {
+        InterfaceControl? interfaceElement;
+        string? data = null;
+
+        if (control != null) {
+            string[] split = control.Split(":");
+
+            interfaceElement = (InterfaceControl?)FindElementWithId(split[0]);
+            if (split.Length > 1) data = split[1];
+        } else {
+            interfaceElement = DefaultOutput;
+        }
+
+        interfaceElement?.Output(value, data);
     }
 
     public void WinClone(string controlId, string cloneId) {
@@ -662,11 +836,23 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
 
     private void Reset() {
         _userInterfaceManager.MainViewport.Visible = false;
+        //close windows if they're open, and clear all child uielements
+        foreach (var window in Windows.Values){
+            window.CloseChildWindow();
+            window.UIElement.RemoveAllChildren();
+        }
 
         Windows.Clear();
         Menus.Clear();
         MacroSets.Clear();
+
+        //close popups if they're open
+        foreach (var popup in _popupWindows.Values) {
+            popup.Close();
+        }
+
         _popupWindows.Clear();
+        _inputManager.ResetAllBindings();
     }
 
     private void LoadInterface(InterfaceDescriptor descriptor) {
@@ -714,20 +900,21 @@ internal sealed class DreamInterfaceManager : IDreamInterfaceManager {
             case MacroSetDescriptor macroSetDescriptor:
                 InterfaceMacroSet macroSet = new(macroSetDescriptor, _entitySystemManager, _inputManager, _uiManager);
 
-                MacroSets[macroSet.Id] = macroSet;
+                MacroSets[macroSet.Id.Value] = macroSet;
                 break;
             case MenuDescriptor menuDescriptor:
                 InterfaceMenu menu = new(menuDescriptor);
 
-                Menus.Add(menu.Id, menu);
+                Menus.Add(menu.Id.Value, menu);
                 break;
             case WindowDescriptor windowDescriptor:
                 ControlWindow window = new ControlWindow(windowDescriptor);
 
-                Windows.Add(windowDescriptor.Id, window);
+                Windows.Add(windowDescriptor.Id.Value, window);
                 if (window.IsDefault) {
                     DefaultWindow = window;
                 }
+
                 break;
         }
     }
@@ -752,6 +939,7 @@ public interface IDreamInterfaceManager {
     public ControlInfo? DefaultInfo { get; }
     public ControlMap? DefaultMap { get; }
     public ViewRange View { get; }
+    public bool ShowPopupMenus { get; }
 
     void Initialize();
     void FrameUpdate(FrameEventArgs frameEventArgs);
@@ -760,9 +948,10 @@ public interface IDreamInterfaceManager {
     void LoadInterfaceFromSource(string source);
 
     public void OpenAlert(string title, string message, string button1, string? button2, string? button3, Action<DreamValueType, object?>? onClose);
-    void Prompt(DreamValueType types, string title, string message, string defaultValue, Action<DreamValueType, object?>? onClose);
-    void RunCommand(string fullCommand);
-    void StartRepeatingCommand(string command);
-    void StopRepeatingCommand(string command);
-    void WinSet(string? controlId, string winsetParams);
+    public void Prompt(DreamValueType types, string title, string message, string defaultValue, Action<DreamValueType, object?>? onClose);
+    public void RunCommand(string fullCommand);
+    public void StartRepeatingCommand(string command);
+    public void StopRepeatingCommand(string command);
+    public void WinSet(string? controlId, string winsetParams);
+    public string WinGet(string controlId, string queryValue, bool forceJson = false, bool forceSnowflake = false);
 }

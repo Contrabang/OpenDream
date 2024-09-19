@@ -3,8 +3,6 @@ using DMCompiler.Compiler.DM;
 using DMCompiler.Compiler.DMM;
 using DMCompiler.Compiler.DMPreprocessor;
 using DMCompiler.DM;
-using System;
-using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -101,17 +99,25 @@ public static class DMCompiler {
             // NB: IncludeFile pushes newly seen files to a stack, so push
             // them in reverse order to process them in forward order.
             for (var i = files.Count - 1; i >= 0; i--) {
+                if (!File.Exists(files[i])) {
+                    Console.WriteLine($"'{files[i]}' does not exist");
+                    return null;
+                }
+
                 string includeDir = Path.GetDirectoryName(files[i]);
                 string fileName = Path.GetFileName(files[i]);
 
                 preproc.IncludeFile(includeDir, fileName);
             }
+
             string compilerDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? string.Empty;
             string dmStandardDirectory = Path.Join(compilerDirectory, "DMStandard");
+
             // Push DMStandard to the top of the stack, prioritizing it.
             if (!Settings.NoStandard) {
                 preproc.IncludeFile(dmStandardDirectory, "_Standard.dm");
             }
+
             // Push the pragma config file to the tippy-top of the stack, super-duper prioritizing it, since it governs some compiler behaviour.
             string pragmaName;
             string pragmaDirectory;
@@ -122,10 +128,12 @@ public static class DMCompiler {
                 pragmaDirectory = dmStandardDirectory;
                 pragmaName = "DefaultPragmaConfig.dm";
             }
+
             if(!File.Exists(Path.Join(pragmaDirectory,pragmaName))) {
                 ForcedError($"Configuration file '{pragmaName}' not found.");
                 return null;
             }
+
             preproc.IncludeFile(pragmaDirectory,pragmaName);
             return preproc;
         }
@@ -153,10 +161,6 @@ public static class DMCompiler {
 
         VerbosePrint("Parsing");
         DMASTFile astFile = dmParser.File();
-
-        foreach (CompilerEmission warning in dmParser.Emissions) {
-            Emit(warning);
-        }
 
         DMASTFolder astSimplifier = new DMASTFolder();
         VerbosePrint("Constant folding");
@@ -227,7 +231,7 @@ public static class DMCompiler {
         if (Settings.SuppressUnimplementedWarnings)
             return;
 
-        ForcedWarning(loc, message);
+        Emit(WarningCode.UnimplementedAccess, loc, message);
     }
 
     public static void VerbosePrint(string message) {
@@ -251,19 +255,8 @@ public static class DMCompiler {
             DMMParser parser = new DMMParser(lexer, zOffset);
             DreamMapJson map = parser.ParseMap();
 
-            bool hadErrors = false;
-            if (parser.Emissions.Count > 0) {
-                foreach (CompilerEmission error in parser.Emissions) {
-                    if (error.Level == ErrorLevel.Error)
-                        hadErrors = true;
-
-                    Emit(error);
-                }
-            }
-
             zOffset = Math.Max(zOffset + 1, map.MaxZ);
-            if (!hadErrors)
-                maps.Add(map);
+            maps.Add(map);
         }
 
         return maps;
@@ -271,25 +264,32 @@ public static class DMCompiler {
 
     private static string SaveJson(List<DreamMapJson> maps, string interfaceFile, string outputFile) {
         var jsonRep = DMObjectTree.CreateJsonRepresentation();
-        DreamCompiledJson compiledDream = new DreamCompiledJson {
+        var compiledDream = new DreamCompiledJson {
             Metadata = new DreamCompiledJsonMetadata { Version = OpcodeVerifier.GetOpcodesHash() },
             Strings = DMObjectTree.StringTable,
             Resources = DMObjectTree.Resources.ToArray(),
             Maps = maps,
-            Interface = string.IsNullOrEmpty(interfaceFile) ? "" : Path.GetRelativePath(Path.GetDirectoryName(Path.GetFullPath(outputFile)), interfaceFile),
+            Interface = string.IsNullOrEmpty(interfaceFile)
+                ? ""
+                : Path.GetRelativePath(Path.GetDirectoryName(Path.GetFullPath(outputFile)), interfaceFile),
             Types = jsonRep.Item1,
             Procs = jsonRep.Item2
         };
 
-        if (DMObjectTree.GlobalInitProc.Bytecode.Length > 0) compiledDream.GlobalInitProc = DMObjectTree.GlobalInitProc.GetJsonRepresentation();
+        if (DMObjectTree.GlobalInitProc.AnnotatedBytecode.GetLength() > 0)
+            compiledDream.GlobalInitProc = DMObjectTree.GlobalInitProc.GetJsonRepresentation();
 
         if (DMObjectTree.Globals.Count > 0) {
-            GlobalListJson globalListJson = new GlobalListJson();
-            globalListJson.GlobalCount = DMObjectTree.Globals.Count;
-            globalListJson.Names = new List<string>(globalListJson.GlobalCount);
+            GlobalListJson globalListJson = new GlobalListJson {
+                GlobalCount = DMObjectTree.Globals.Count,
+                Names = new(),
+                Globals = new()
+            };
+
+            globalListJson.Names.EnsureCapacity(globalListJson.GlobalCount);
 
             // Approximate capacity (4/285 in tgstation, ~3%)
-            globalListJson.Globals = new Dictionary<int, object>((int) (DMObjectTree.Globals.Count * 0.03));
+            globalListJson.Globals.EnsureCapacity((int)(DMObjectTree.Globals.Count * 0.03));
 
             for (int i = 0; i < DMObjectTree.Globals.Count; i++) {
                 DMVariable global = DMObjectTree.Globals[i];
@@ -302,6 +302,7 @@ public static class DMCompiler {
                     globalListJson.Globals.Add(i, globalJson);
                 }
             }
+
             compiledDream.Globals = globalListJson;
         }
 
@@ -361,6 +362,8 @@ public static class DMCompiler {
 public struct DMCompilerSettings {
     public List<string>? Files = null;
     public bool SuppressUnimplementedWarnings = false;
+    /// <summary> Typechecking won't fail if the RHS type is "as anything" to ease migration, thus only emitting for explicit mismatches (e.g. "num" and "text") </summary>
+    public bool SkipAnythingTypecheck = false;
     public bool NoticesEnabled = false;
     public bool DumpPreprocessor = false;
     public bool NoStandard = false;

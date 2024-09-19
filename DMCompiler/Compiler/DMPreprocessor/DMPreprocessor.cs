@@ -1,6 +1,4 @@
-using System;
 using System.Collections;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
@@ -94,6 +92,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
                     HandleUndefineDirective(token);
                     break;
                 case TokenType.DM_Preproc_If:
+                    _bufferedWhitespace.Clear();
                     HandleIfDirective(token);
                     break;
                 case TokenType.DM_Preproc_Ifdef:
@@ -111,17 +110,17 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
                     if (wasTruthy.Value)
                         SkipIfBody(true);
                     else
-                        _lastIfEvaluations.Push((bool?)null);
+                        _lastIfEvaluations.Push(null);
                     break;
                 case TokenType.DM_Preproc_Warning:
                 case TokenType.DM_Preproc_Error:
                     HandleErrorOrWarningDirective(token);
                     break;
                 case TokenType.DM_Preproc_Pragma:
-                    HandlePragmaDirective(token);
+                    HandlePragmaDirective();
                     break;
                 case TokenType.DM_Preproc_EndIf:
-                    if (!_lastIfEvaluations.TryPop(out var _))
+                    if (!_lastIfEvaluations.TryPop(out _))
                         DMCompiler.Emit(WarningCode.BadDirective, token.Location, "Unexpected #endif");
                     break;
                 case TokenType.DM_Preproc_Identifier: {
@@ -159,7 +158,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
                 }
 
                 case TokenType.Error:
-                    DMCompiler.Emit(WarningCode.ErrorDirective, token.Location, (string)token.Value);
+                    DMCompiler.Emit(WarningCode.ErrorDirective, token.Location, token.ValueAsString());
                     break;
 
                 default:
@@ -272,7 +271,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         }
 
         DMPreprocessorLexer currentLexer = _lexerStack.Peek();
-        string file = Path.Combine(Path.GetDirectoryName(currentLexer.File.Replace('\\', Path.DirectorySeparatorChar)), (string)includedFileToken.Value);
+        string file = Path.Combine(Path.GetDirectoryName(currentLexer.File.Replace('\\', Path.DirectorySeparatorChar)), includedFileToken.ValueAsString());
         string directory = currentLexer.IncludeDirectory;
 
         IncludeFile(directory, file, includedFrom: includeToken.Location);
@@ -294,7 +293,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         if (defineIdentifier.Text == "FILE_DIR") {
             Token dirToken = GetNextToken(true);
             string? dirTokenValue = dirToken.Type switch {
-                TokenType.DM_Preproc_ConstantString => (string?)dirToken.Value,
+                TokenType.DM_Preproc_ConstantString => dirToken.ValueAsString(),
                 TokenType.DM_Preproc_Punctuator_Period => ".",
                 _ => null
             };
@@ -444,7 +443,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
                 case TokenType.DM_Preproc_LineSplice:
                     continue;
                 case TokenType.DM_Preproc_Identifier:
-                    if(token.Text == "defined") // need to be careful here to prevent macros in defined() expressions from being clobbered
+                    if(token.Text == "defined" || token.Text == "fexists") // need to be careful here to prevent macros in defined() or fexists() expressions from being clobbered
                         tryIdentifiersAsMacros = false;
                     else if (tryIdentifiersAsMacros && TryMacro(token)) // feeding any novel macro tokens back into the pipeline here
                         continue;
@@ -617,13 +616,13 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
         }
     }
 
-    private void HandlePragmaDirective(Token pragmaDirective) {
+    private void HandlePragmaDirective() {
         Token warningNameToken = GetNextToken(true);
         WarningCode warningCode;
         switch(warningNameToken.Type) {
             case TokenType.DM_Preproc_Identifier: {
                 if (!Enum.TryParse(warningNameToken.Text, out warningCode)) {
-                    DMCompiler.Emit(WarningCode.BadDirective, warningNameToken.Location, $"Warning '{warningNameToken.PrintableText}' does not exist");
+                    DMCompiler.Emit(WarningCode.InvalidWarningCode, warningNameToken.Location, $"Warning '{warningNameToken.PrintableText}' does not exist");
                     GetLineOfTokens(); // consume what's on this line and leave
                     return;
                 }
@@ -632,7 +631,7 @@ public sealed class DMPreprocessor(bool enableDirectives) : IEnumerable<Token> {
             }
             case TokenType.DM_Preproc_Number: {
                 if (!int.TryParse(warningNameToken.Text, out var intValue)) {
-                    DMCompiler.Emit(WarningCode.BadDirective, warningNameToken.Location, $"Warning OD{warningNameToken.PrintableText} does not exist");
+                    DMCompiler.Emit(WarningCode.InvalidWarningCode, warningNameToken.Location, $"Warning OD{warningNameToken.PrintableText} does not exist");
                     GetLineOfTokens();
                     return;
                 }

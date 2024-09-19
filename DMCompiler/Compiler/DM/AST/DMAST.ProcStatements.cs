@@ -14,18 +14,29 @@ public abstract class DMASTProcStatement(Location location) : DMASTNode(location
     }
 }
 
+/// Lone semicolon, analogous to null statements in C.
+/// Main purpose is to suppress EmptyBlock emissions.
 public sealed class DMASTNullProcStatement(Location location) : DMASTProcStatement(location);
+
+/// <summary>
+/// Used when there was an error parsing a statement
+/// </summary>
+/// <remarks>Emit an error code before creating!</remarks>
+public sealed class DMASTInvalidProcStatement(Location location) : DMASTProcStatement(location);
 
 public sealed class DMASTProcStatementExpression(Location location, DMASTExpression expression)
     : DMASTProcStatement(location) {
     public DMASTExpression Expression = expression;
 }
 
-public sealed class DMASTProcStatementVarDeclaration(Location location, DMASTPath path, DMASTExpression? value)
+public sealed class DMASTProcStatementVarDeclaration(Location location, DMASTPath path, DMASTExpression? value, DMComplexValueType valType)
     : DMASTProcStatement(location) {
     public DMASTExpression? Value = value;
 
     public DreamPath? Type => _varDecl.IsList ? DreamPath.List : _varDecl.TypePath;
+
+    public DMComplexValueType ValType => valType;
+
     public string Name => _varDecl.VarName;
     public bool IsGlobal => _varDecl.IsStatic;
     public bool IsConst => _varDecl.IsConst;
@@ -101,10 +112,10 @@ public sealed class DMASTProcStatementFor(
     DMASTExpression? expr1,
     DMASTExpression? expr2,
     DMASTExpression? expr3,
-    DMValueType? dmTypes,
+    DMComplexValueType? dmTypes,
     DMASTProcBlockInner body) : DMASTProcStatement(location) {
     public DMASTExpression? Expression1 = expr1, Expression2 = expr2, Expression3 = expr3;
-    public DMValueType? DMTypes = dmTypes;
+    public DMComplexValueType? DMTypes = dmTypes;
     public readonly DMASTProcBlockInner Body = body;
 }
 
